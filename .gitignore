@@ -1,0 +1,7 @@
+build/
+sdkconfig.old
+*.pyc
+.vscode/
+.clangd
+waveshare_4p3b_demo/
+*.zip
