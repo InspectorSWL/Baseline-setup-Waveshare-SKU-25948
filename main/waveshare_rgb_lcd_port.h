@@ -7,6 +7,7 @@
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_lcd_touch.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
 
@@ -15,6 +16,8 @@
 #define I2C_MASTER_NUM              I2C_NUM_0 /*!< I2C master i2c port number */
 #define I2C_MASTER_FREQ_HZ          400000                     /*!< I2C master clock frequency */
 #define I2C_MASTER_TIMEOUT_MS       1000
+#define GPIO_INPUT_IO_4             4
+#define GPIO_INPUT_PIN_SEL          (1ULL << GPIO_INPUT_IO_4)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////// Please update the following configuration according to your LCD spec //////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -52,11 +55,15 @@
 #define EXAMPLE_PIN_NUM_BK_LIGHT        (-1)    // -1 if not used
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL   (1)
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL  !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
-
-static const char *TAG = "example";
+#define EXAMPLE_PIN_NUM_TOUCH_RST       (-1)
+#define EXAMPLE_PIN_NUM_TOUCH_INT       (-1)
 
 esp_err_t waveshare_esp32_s3_rgb_lcd_init();
+esp_lcd_panel_handle_t waveshare_rgb_lcd_get_panel_handle(void);
+esp_lcd_touch_handle_t waveshare_rgb_lcd_get_touch_handle(void);
+const char *waveshare_rgb_lcd_get_touch_status(void);
 esp_err_t waveshare_rgb_lcd_fill_color(uint16_t color565);
+esp_err_t waveshare_rgb_lcd_draw_text(int x, int y, const char *text, uint16_t fg_color565, uint16_t bg_color565);
 
 esp_err_t wavesahre_rgb_lcd_bl_on();
 esp_err_t wavesahre_rgb_lcd_bl_off();

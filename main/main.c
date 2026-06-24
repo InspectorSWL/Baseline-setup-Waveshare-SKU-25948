@@ -6,14 +6,20 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gui.h"
+#include "lvgl.h"
+#include "lvgl_port.h"
+#include "wifi_manager.h"
 #include "waveshare_rgb_lcd_port.h"
 #include <stdio.h>
+
+static const char *TAG = "app_main";
 
 void app_main()
 {
     printf("[STEP] app_main entered\n");
     fflush(stdout);
-    ESP_LOGI(TAG, "FW_MARKER: SOLID_COLOR_TEST_2026_06_19");
+    ESP_LOGI(TAG, "FW_MARKER: HELLO_WORLD_2026_06_21");
 
     printf("[STEP] starting RGB init\n");
     fflush(stdout);
@@ -31,27 +37,26 @@ void app_main()
     fflush(stdout);
     wavesahre_rgb_lcd_bl_on();  //Turn on the screen backlight 
     // wavesahre_rgb_lcd_bl_off(); //Turn off the screen backlight 
-    
-    ESP_LOGI(TAG, "Display RAW panel solid color test");
 
-    const uint16_t test_colors[] = {
-        0xFFFF, // white
-        0xF800, // red
-        0x07E0, // green
-        0x001F, // blue
-    };
+    ret = lvgl_port_init(waveshare_rgb_lcd_get_panel_handle(), waveshare_rgb_lcd_get_touch_handle());
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "LVGL init failed: 0x%x", ret);
+        printf("[STEP] LVGL init failed: 0x%x\n", ret);
+        fflush(stdout);
+        while (true) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+
+    wifi_manager_init();
+
+    ESP_LOGI(TAG, "Create LVGL button screen");
+    if (lvgl_port_lock(-1)) {
+        gui_create();
+        lvgl_port_unlock();
+    }
 
     while (true) {
-        for (size_t i = 0; i < sizeof(test_colors) / sizeof(test_colors[0]); ++i) {
-            ret = waveshare_rgb_lcd_fill_color(test_colors[i]);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "Fill color failed at index %u: 0x%x", (unsigned int)i, ret);
-                printf("[STEP] fill failed at index %u: 0x%x\n", (unsigned int)i, ret);
-                fflush(stdout);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                continue;
-            }
-            vTaskDelay(pdMS_TO_TICKS(2000));
-        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

@@ -1,4 +1,7 @@
 build/
+build_j/
+build_junction/
+managed_components/
 sdkconfig.old
 *.pyc
 .vscode/

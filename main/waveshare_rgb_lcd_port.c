@@ -6,10 +6,50 @@
 
 #include "waveshare_rgb_lcd_port.h"
 
+#include <stdio.h>
+#include <string.h>
+
+#include "esp_lcd_io_i2c.h"
+#include "esp_lcd_touch_gt911.h"
+
 static i2c_master_bus_handle_t s_i2c_bus_handle = NULL;
 static i2c_master_dev_handle_t s_ch422g_mode_dev = NULL;
 static i2c_master_dev_handle_t s_ch422g_data_dev = NULL;
 static esp_lcd_panel_handle_t s_panel_handle = NULL;
+static esp_lcd_touch_handle_t s_touch_handle = NULL;
+static char s_touch_status[96] = "TP: init not started";
+static const char *TAG = "example";
+
+#define FONT_WIDTH 5
+#define FONT_HEIGHT 7
+#define FONT_SPACING 1
+#define FONT_SCALE 8
+
+typedef struct {
+    char ch;
+    uint8_t rows[FONT_HEIGHT];
+} glyph_t;
+
+static const glyph_t s_font[] = {
+    { ' ', { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+    { 'd', { 0x01, 0x01, 0x07, 0x09, 0x09, 0x09, 0x07 } },
+    { 'e', { 0x00, 0x00, 0x06, 0x09, 0x0F, 0x08, 0x07 } },
+    { 'h', { 0x08, 0x08, 0x0E, 0x09, 0x09, 0x09, 0x09 } },
+    { 'l', { 0x06, 0x02, 0x02, 0x02, 0x02, 0x02, 0x07 } },
+    { 'o', { 0x00, 0x00, 0x06, 0x09, 0x09, 0x09, 0x06 } },
+    { 'r', { 0x00, 0x00, 0x0B, 0x0C, 0x08, 0x08, 0x08 } },
+    { 'w', { 0x00, 0x00, 0x09, 0x09, 0x09, 0x0F, 0x06 } },
+};
+
+static const glyph_t *find_glyph(char ch)
+{
+    for (size_t i = 0; i < sizeof(s_font) / sizeof(s_font[0]); ++i) {
+        if (s_font[i].ch == ch) {
+            return &s_font[i];
+        }
+    }
+    return &s_font[0];
+}
 
 /**
  * @brief I2C master initialization
@@ -46,6 +86,106 @@ static esp_err_t i2c_master_init(void)
     ESP_ERROR_CHECK(i2c_master_bus_add_device(s_i2c_bus_handle, &ch422g_data_cfg, &s_ch422g_data_dev));
 
     return ESP_OK;
+}
+
+static esp_err_t touch_reset_gpio_init(void)
+{
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = GPIO_INPUT_PIN_SEL,
+    };
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret == ESP_OK) {
+        gpio_set_level(GPIO_INPUT_IO_4, 1);
+    }
+    return ret;
+}
+
+static esp_err_t waveshare_esp32_s3_touch_reset(void)
+{
+    uint8_t write_buf = 0x01;
+    ESP_LOGI(TAG, "Touch reset: configure CH422G output mode");
+    ESP_ERROR_CHECK(i2c_master_transmit(s_ch422g_mode_dev, &write_buf, 1, I2C_MASTER_TIMEOUT_MS));
+
+    write_buf = 0x2C;
+    ESP_LOGI(TAG, "Touch reset: drive expander to 0x2C");
+    ESP_ERROR_CHECK(i2c_master_transmit(s_ch422g_data_dev, &write_buf, 1, I2C_MASTER_TIMEOUT_MS));
+    esp_rom_delay_us(100 * 1000);
+
+    ESP_LOGI(TAG, "Touch reset: pull GPIO4 low");
+    gpio_set_level(GPIO_INPUT_IO_4, 0);
+    esp_rom_delay_us(100 * 1000);
+
+    write_buf = 0x2E;
+    ESP_LOGI(TAG, "Touch reset: drive expander to 0x2E");
+    ESP_ERROR_CHECK(i2c_master_transmit(s_ch422g_data_dev, &write_buf, 1, I2C_MASTER_TIMEOUT_MS));
+    esp_rom_delay_us(200 * 1000);
+
+    ESP_LOGI(TAG, "Touch reset sequence complete");
+
+    return ESP_OK;
+}
+
+static esp_err_t touch_init(void)
+{
+    if (s_touch_handle != NULL) {
+        ESP_LOGI(TAG, "Touch already initialized");
+        snprintf(s_touch_status, sizeof(s_touch_status), "TP: already initialized");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Touch init: configure reset GPIO");
+    ESP_ERROR_CHECK(touch_reset_gpio_init());
+    ESP_LOGI(TAG, "Touch init: reset controller");
+    ESP_ERROR_CHECK(waveshare_esp32_s3_touch_reset());
+
+    const esp_err_t probe_14 = i2c_master_probe(s_i2c_bus_handle, 0x14, I2C_MASTER_TIMEOUT_MS);
+    const esp_err_t probe_5d = i2c_master_probe(s_i2c_bus_handle, 0x5D, I2C_MASTER_TIMEOUT_MS);
+    ESP_LOGI(TAG, "Touch probe results: 0x14=%s 0x5D=%s",
+             probe_14 == ESP_OK ? "OK" : "MISS",
+             probe_5d == ESP_OK ? "OK" : "MISS");
+    snprintf(s_touch_status,
+             sizeof(s_touch_status),
+             "TP probe 14:%s 5D:%s",
+             probe_14 == ESP_OK ? "OK" : "--",
+             probe_5d == ESP_OK ? "OK" : "--");
+
+    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
+    const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+    ESP_LOGI(TAG, "Touch init: create GT911 I2C panel IO");
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(s_i2c_bus_handle, &tp_io_config, &tp_io_handle));
+
+    esp_lcd_touch_io_gt911_config_t tp_gt911_config = {
+        .dev_addr = tp_io_config.dev_addr,
+    };
+    const esp_lcd_touch_config_t tp_cfg = {
+        .x_max = EXAMPLE_LCD_H_RES,
+        .y_max = EXAMPLE_LCD_V_RES,
+        .rst_gpio_num = EXAMPLE_PIN_NUM_TOUCH_RST,
+        .int_gpio_num = EXAMPLE_PIN_NUM_TOUCH_INT,
+        .levels = {
+            .reset = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            .swap_xy = 0,
+            .mirror_x = 0,
+            .mirror_y = 0,
+        },
+        .driver_data = &tp_gt911_config,
+    };
+
+    ESP_LOGI(TAG, "Touch init: create GT911 touch handle");
+    esp_err_t ret = esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &s_touch_handle);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Touch init succeeded");
+        snprintf(s_touch_status, sizeof(s_touch_status), "TP init OK addr 0x%02lX", (unsigned long)tp_io_config.dev_addr);
+    } else {
+        ESP_LOGE(TAG, "Touch init failed: 0x%x", ret);
+        snprintf(s_touch_status, sizeof(s_touch_status), "TP init fail 0x%x", ret);
+    }
+    return ret;
 }
 
 // Reset LCD through CH422G expander: LCD_RST low(10ms) then high(100ms)
@@ -146,7 +286,25 @@ esp_err_t waveshare_esp32_s3_rgb_lcd_init()
     s_panel_handle = panel_handle;
     ESP_LOGW(TAG, "Raw RGB baseline enabled");
 
+    ESP_LOGI(TAG, "Initialize GT911 touch controller");
+    ESP_ERROR_CHECK(touch_init());
+
     return ESP_OK; // Return success 
+}
+
+esp_lcd_panel_handle_t waveshare_rgb_lcd_get_panel_handle(void)
+{
+    return s_panel_handle;
+}
+
+esp_lcd_touch_handle_t waveshare_rgb_lcd_get_touch_handle(void)
+{
+    return s_touch_handle;
+}
+
+const char *waveshare_rgb_lcd_get_touch_status(void)
+{
+    return s_touch_status;
 }
 
 esp_err_t waveshare_rgb_lcd_fill_color(uint16_t color565)
@@ -179,6 +337,65 @@ esp_err_t waveshare_rgb_lcd_fill_color(uint16_t color565)
 
     free(line_buf);
     return ESP_OK;
+}
+
+esp_err_t waveshare_rgb_lcd_draw_text(int x, int y, const char *text, uint16_t fg_color565, uint16_t bg_color565)
+{
+    if (!s_panel_handle) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!text) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const size_t text_len = strlen(text);
+    if (text_len == 0) {
+        return ESP_OK;
+    }
+
+    const int glyph_advance = (FONT_WIDTH + FONT_SPACING) * FONT_SCALE;
+    const int draw_width = (int)(text_len * glyph_advance);
+    const int draw_height = FONT_HEIGHT * FONT_SCALE;
+
+    if (x < 0 || y < 0 || x + draw_width > EXAMPLE_LCD_H_RES || y + draw_height > EXAMPLE_LCD_V_RES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t *buffer = heap_caps_malloc((size_t)draw_width * draw_height * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!buffer) {
+        buffer = heap_caps_malloc((size_t)draw_width * draw_height * sizeof(uint16_t), MALLOC_CAP_DMA);
+    }
+    if (!buffer) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    for (int row = 0; row < draw_height; ++row) {
+        for (int col = 0; col < draw_width; ++col) {
+            buffer[row * draw_width + col] = bg_color565;
+        }
+    }
+
+    for (size_t index = 0; index < text_len; ++index) {
+        const glyph_t *glyph = find_glyph(text[index]);
+        const int glyph_x = (int)index * glyph_advance;
+        for (int row = 0; row < FONT_HEIGHT; ++row) {
+            for (int col = 0; col < FONT_WIDTH; ++col) {
+                if (glyph->rows[row] & (1U << (FONT_WIDTH - 1 - col))) {
+                    const int pixel_x = glyph_x + col * FONT_SCALE;
+                    const int pixel_y = row * FONT_SCALE;
+                    for (int scale_y = 0; scale_y < FONT_SCALE; ++scale_y) {
+                        for (int scale_x = 0; scale_x < FONT_SCALE; ++scale_x) {
+                            buffer[(pixel_y + scale_y) * draw_width + pixel_x + scale_x] = fg_color565;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + draw_width, y + draw_height, buffer);
+    free(buffer);
+    return ret;
 }
 
 /******************************* Turn on the screen backlight **************************************/
