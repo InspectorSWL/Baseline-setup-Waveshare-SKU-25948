@@ -1,6 +1,7 @@
 #include "wifi_manager.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,10 +18,14 @@ static const char *NVS_KEY_SSID = "ssid";
 static const char *NVS_KEY_PASSWORD = "password";
 static bool s_wifi_initialized;
 static bool s_wifi_connected;
+static bool s_reconnect_enabled;
+static bool s_manual_reconfigure_in_progress;
+static esp_netif_t *s_wifi_netif;
 static char s_saved_ssid[33];
 static char s_saved_password[65];
 static char s_pending_ssid[33];
 static char s_pending_password[65];
+static char s_ip_address[16];
 
 static void trim_copy(char *destination, size_t destination_size, const char *source)
 {
@@ -188,19 +193,64 @@ static void save_pending_credentials(void)
     copy_string(s_saved_password, sizeof(s_saved_password), s_pending_password);
 }
 
+static bool has_known_credentials(void)
+{
+    return s_pending_ssid[0] != '\0' || s_saved_ssid[0] != '\0';
+}
+
+static void clear_ip_address(void)
+{
+    s_ip_address[0] = '\0';
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT) {
         if (event_id == WIFI_EVENT_STA_START) {
             s_wifi_connected = false;
         } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+            const wifi_event_sta_disconnected_t *disconnected_event = event_data;
             s_wifi_connected = false;
-            ESP_LOGI(TAG, "WiFi disconnected");
+            clear_ip_address();
+
+            if (s_manual_reconfigure_in_progress
+                && disconnected_event != NULL
+                && disconnected_event->reason == WIFI_REASON_ASSOC_LEAVE) {
+                s_manual_reconfigure_in_progress = false;
+                return;
+            }
+
+            if (s_reconnect_enabled && has_known_credentials()) {
+                esp_err_t reconnect_ret = esp_wifi_connect();
+                if (reconnect_ret == ESP_OK) {
+                    ESP_LOGI(TAG, "WiFi disconnected, retrying connection");
+                } else {
+                    ESP_LOGW(TAG, "WiFi reconnect request failed: 0x%x", reconnect_ret);
+                }
+            } else {
+                ESP_LOGI(TAG, "WiFi disconnected");
+            }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *got_ip_event = event_data;
+        esp_netif_ip_info_t ip_info;
+        wifi_ap_record_t ap_info;
         s_wifi_connected = true;
+        s_reconnect_enabled = true;
+        s_manual_reconfigure_in_progress = false;
+        if (got_ip_event != NULL) {
+            snprintf(s_ip_address, sizeof(s_ip_address), IPSTR, IP2STR(&got_ip_event->ip_info.ip));
+        }
         save_pending_credentials();
-        ESP_LOGI(TAG, "WiFi connected");
+        ESP_LOGI(TAG, "WiFi connected with IP %s", s_ip_address[0] != '\0' ? s_ip_address : "unknown");
+
+        if (s_wifi_netif != NULL && esp_netif_get_ip_info(s_wifi_netif, &ip_info) == ESP_OK) {
+            ESP_LOGI(TAG, "Gateway " IPSTR, IP2STR(&ip_info.gw));
+        }
+
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            ESP_LOGI(TAG, "RSSI %d dBm", ap_info.rssi);
+        }
     }
 }
 
@@ -229,7 +279,7 @@ void wifi_manager_init(void)
         ESP_ERROR_CHECK(ret);
     }
 
-    esp_netif_create_default_wifi_sta();
+    s_wifi_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t wifi_init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_init_cfg));
@@ -240,8 +290,12 @@ void wifi_manager_init(void)
 
     s_wifi_initialized = true;
     s_wifi_connected = false;
+    s_reconnect_enabled = false;
+    s_manual_reconfigure_in_progress = false;
+    clear_ip_address();
 
     if (s_saved_ssid[0] != '\0') {
+        s_reconnect_enabled = true;
         wifi_manager_connect(s_saved_ssid, s_saved_password);
     }
 }
@@ -286,6 +340,9 @@ void wifi_manager_connect(const char *ssid, const char *password)
     copy_string(s_pending_password, sizeof(s_pending_password), trimmed_password);
 
     s_wifi_connected = false;
+    s_reconnect_enabled = true;
+    s_manual_reconfigure_in_progress = true;
+    clear_ip_address();
 
     esp_err_t ret = esp_wifi_disconnect();
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_CONNECT) {
@@ -396,6 +453,16 @@ bool wifi_manager_scan_ssid(const char *ssid, int8_t *rssi, uint8_t *channel)
 bool wifi_manager_is_connected(void)
 {
     return s_wifi_connected;
+}
+
+bool wifi_manager_get_ip_address(char *buffer, size_t buffer_size)
+{
+    if (buffer == NULL || buffer_size == 0) {
+        return false;
+    }
+
+    copy_string(buffer, buffer_size, s_ip_address);
+    return s_ip_address[0] != '\0';
 }
 
 bool wifi_manager_get_saved_credentials(char *ssid, size_t ssid_size, char *password, size_t password_size)

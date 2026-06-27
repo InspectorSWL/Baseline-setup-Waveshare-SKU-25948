@@ -9,6 +9,7 @@
 #include "esp_wifi.h"
 #include "lvgl.h"
 #include "lvgl_port.h"
+#include "time_service.h"
 #include "wifi_manager.h"
 
 #define WIFI_INPUT_WIDTH  (300)
@@ -18,6 +19,10 @@
 #define WIFI_SCAN_BUTTON_WIDTH (280)
 #define WIFI_RESULT_PANEL_WIDTH (560)
 #define WIFI_RESULT_PANEL_HEIGHT (52)
+#define WIFI_NAV_BUTTON_HEIGHT        (44)
+#define WIFI_NAV_BUTTON_SIDE_MARGIN   (18)
+#define WIFI_NAV_BUTTON_BOTTOM_MARGIN (18)
+#define WIFI_NAV_BUTTON_TEXT_PADDING  (18)
 
 static lv_obj_t *s_wifi_screen;
 static lv_obj_t *s_previous_screen;
@@ -65,6 +70,21 @@ static void set_signal(const char *text, lv_color_t color)
     if (s_signal_panel != NULL) {
         lv_obj_set_style_border_color(s_signal_panel, color, 0);
     }
+}
+
+static void set_connected_status_with_ip(void)
+{
+    char ip_address[16] = { 0 };
+    char status_text[64];
+
+    if (wifi_manager_get_ip_address(ip_address, sizeof(ip_address))) {
+        snprintf(status_text, sizeof(status_text), "Connected | IP Address: %s", ip_address);
+    } else {
+        snprintf(status_text, sizeof(status_text), "Connected | IP Address: pending");
+    }
+
+    set_status("", lv_palette_main(LV_PALETTE_GREEN));
+    set_signal(status_text, lv_palette_main(LV_PALETTE_GREEN));
 }
 
 static void hide_keyboard(void)
@@ -138,8 +158,7 @@ static void wifi_event_ui_handler(void *arg, esp_event_base_t event_base, int32_
     }
 
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        set_status("", lv_palette_main(LV_PALETTE_GREEN));
-        set_signal("Connected", lv_palette_main(LV_PALETTE_GREEN));
+        set_connected_status_with_ip();
         hide_keyboard();
         s_connect_requested = false;
         s_waiting_for_connect_result = false;
@@ -149,6 +168,7 @@ static void wifi_event_ui_handler(void *arg, esp_event_base_t event_base, int32_
 
         if (s_waiting_for_connect_result && disconnected_event != NULL
             && disconnected_event->reason == WIFI_REASON_ASSOC_LEAVE) {
+            lvgl_port_unlock();
             return;
         }
 
@@ -175,7 +195,10 @@ static void wifi_event_ui_handler(void *arg, esp_event_base_t event_base, int32_
 static lv_obj_t *create_action_button(lv_obj_t *parent, const char *text)
 {
     lv_obj_t *button = lv_btn_create(parent);
-    lv_obj_set_size(button, WIFI_BUTTON_WIDTH, WIFI_BUTTON_HEIGHT);
+    lv_obj_set_height(button, WIFI_NAV_BUTTON_HEIGHT);
+    lv_obj_set_width(button, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_left(button, WIFI_NAV_BUTTON_TEXT_PADDING, 0);
+    lv_obj_set_style_pad_right(button, WIFI_NAV_BUTTON_TEXT_PADDING, 0);
     lv_obj_set_style_radius(button, 8, 0);
     lv_obj_set_style_bg_color(button, lv_color_make(80, 80, 80), 0);
     lv_obj_set_style_bg_color(button, lv_color_make(120, 120, 120), LV_STATE_PRESSED);
@@ -304,6 +327,8 @@ void wifi_screen_create(void)
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 28);
 
+    (void)time_service_create_status_label(s_wifi_screen);
+
     lv_obj_t *band_note = lv_label_create(s_wifi_screen);
     lv_label_set_text(band_note, "ESP32-S3 WiFi scans 2.4 GHz only");
     lv_obj_set_style_text_color(band_note, lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
@@ -346,11 +371,12 @@ void wifi_screen_create(void)
     lv_obj_add_event_cb(scan_button, scan_button_event_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *connect_button = create_action_button(s_wifi_screen, "CONNECT");
-    lv_obj_align(connect_button, LV_ALIGN_TOP_MID, -110, 338);
+    lv_obj_set_size(connect_button, WIFI_SCAN_BUTTON_WIDTH, WIFI_BUTTON_HEIGHT);
+    lv_obj_align(connect_button, LV_ALIGN_TOP_MID, 0, 338);
     lv_obj_add_event_cb(connect_button, connect_button_event_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *back_button = create_action_button(s_wifi_screen, "BACK");
-    lv_obj_align(back_button, LV_ALIGN_TOP_MID, 110, 338);
+    lv_obj_align(back_button, LV_ALIGN_BOTTOM_RIGHT, -WIFI_NAV_BUTTON_SIDE_MARGIN, -WIFI_NAV_BUTTON_BOTTOM_MARGIN);
     lv_obj_add_event_cb(back_button, back_button_event_cb, LV_EVENT_CLICKED, NULL);
 
     s_signal_panel = lv_obj_create(s_wifi_screen);
@@ -398,8 +424,7 @@ void wifi_screen_show(void)
     load_saved_credentials_into_fields();
 
     if (wifi_manager_is_connected()) {
-        set_status("", lv_palette_main(LV_PALETTE_GREEN));
-        set_signal("Connected", lv_palette_main(LV_PALETTE_GREEN));
+        set_connected_status_with_ip();
     } else {
         set_status("Disconnected", lv_color_white());
         set_signal("Saved credentials loaded", lv_color_white());

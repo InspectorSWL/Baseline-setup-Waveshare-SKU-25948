@@ -36,8 +36,7 @@ dependencies:
     version: 8.4.0
 direct_dependencies:
 - espressif/esp_lcd_touch_gt911
-- idf
 - lvgl/lvgl
-manifest_hash: 5c19265e757123cfbaa2b58c83304c2194695dc02d905d188510ebef89439fa4
+manifest_hash: b1aac6cf6dd860d3e7629c7af7a013b11a084823252de9dd97b1430134daf9a3
 target: esp32s3
 version: 3.0.0

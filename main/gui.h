@@ -1,7 +1,6 @@
 #pragma once
 
-#define GUI_OUTPUT_BUTTON_COUNT (6u)
-
 void gui_create(void);
 
-void gui_set_output_label(unsigned int index, const char *text);
+void gui_set_current_user(const char *vehicle_name);
+void gui_set_volume_liters(float liters);

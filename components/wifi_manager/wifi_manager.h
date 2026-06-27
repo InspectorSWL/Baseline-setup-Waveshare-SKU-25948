@@ -39,3 +39,5 @@ bool wifi_manager_get_saved_credentials(
 );
 
 bool wifi_manager_is_connected(void);
+
+bool wifi_manager_get_ip_address(char *buffer, size_t buffer_size);
